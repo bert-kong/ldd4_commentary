@@ -26,7 +26,8 @@
 #include <linux/proc_fs.h>
 #include <linux/fcntl.h>	/* O_ACCMODE */
 #include <linux/aio.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
+#include <uapi/linux/uio.h>
 #include "scullc.h"		/* local definitions */
 
 
@@ -126,6 +127,7 @@ int scullc_open (struct inode *inode, struct file *filp)
 
 	/*  Find the device */
 	dev = container_of(inode->i_cdev, struct scullc_dev, cdev);
+	printk(KERN_DEBUG "debug ---> %s:%p\n", __func__, dev);
 
     	/* now trim to 0 the length of the device if open was write-only */
 	if ( (filp->f_flags & O_ACCMODE) == O_WRONLY) {
@@ -396,6 +398,7 @@ loff_t scullc_llseek (struct file *filp, loff_t off, int whence)
  * A simple asynchronous I/O implementation.
  */
 
+#if 0
 struct async_work {
 	struct kiocb *iocb;
 	int result;
@@ -463,6 +466,7 @@ static ssize_t scullc_aio_write(struct kiocb *iocb, const struct iovec *iovec,
 {
 	return scullc_defer_op(1, iocb, iovec, nr_segs, pos);
 }
+#endif
 
 
  
@@ -479,8 +483,8 @@ struct file_operations scullc_fops = {
 	.unlocked_ioctl = scullc_ioctl,
 	.open =	     scullc_open,
 	.release =   scullc_release,
-	.aio_read =  scullc_aio_read,
-	.aio_write = scullc_aio_write,
+	//.aio_read =  scullc_aio_read,
+	//.aio_write = scullc_aio_write,
 };
 
 int scullc_trim(struct scullc_dev *dev)
@@ -554,11 +558,15 @@ int scullc_init(void)
 	 * can be specified at load time
 	 */
 	scullc_devices = kmalloc(scullc_devs*sizeof (struct scullc_dev), GFP_KERNEL);
+	printk(KERN_DEBUG "debug ---> %s:%p\n", __func__, scullc_devices);
+
 	if (!scullc_devices) {
 		result = -ENOMEM;
 		goto fail_malloc;
 	}
 	memset(scullc_devices, 0, scullc_devs*sizeof (struct scullc_dev));
+
+	/* inititialize the scullc data structure */
 	for (i = 0; i < scullc_devs; i++) {
 		scullc_devices[i].quantum = scullc_quantum;
 		scullc_devices[i].qset = scullc_qset;
@@ -566,8 +574,11 @@ int scullc_init(void)
 		scullc_setup_cdev(scullc_devices + i, i);
 	}
 
-	scullc_cache = kmem_cache_create("scullc", scullc_quantum,
-			0, SLAB_HWCACHE_ALIGN, NULL); /* no ctor */
+	scullc_cache = kmem_cache_create("scullc", 
+		                    	 scullc_quantum,
+			                 0, 
+					 SLAB_HWCACHE_ALIGN, 
+					 NULL); /* no ctor */
 	if (!scullc_cache) {
 		scullc_cleanup();
 		return -ENOMEM;

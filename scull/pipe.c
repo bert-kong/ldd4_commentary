@@ -27,7 +27,8 @@
 #include <linux/poll.h>
 #include <linux/cdev.h>
 #include <linux/sched.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
+#include <linux/proc_fs.h>
 
 #include "scull.h"		/* local definitions */
 
@@ -176,8 +177,10 @@ static int scull_getwritespace(struct scull_pipe *dev, struct file *filp)
 		if (spacefree(dev) == 0)
 			schedule();
 		finish_wait(&dev->outq, &wait);
+#if 0
 		if (signal_pending(current))
 			return -ERESTARTSYS; /* signal: tell the fs layer to handle it */
+#endif
 		if (mutex_lock_interruptible(&dev->mutex))
 			return -ERESTARTSYS;
 	}
@@ -373,7 +376,7 @@ int scull_p_init(dev_t firstdev)
 		scull_p_setup_cdev(scull_p_devices + i, i);
 	}
 #ifdef SCULL_DEBUG
-	create_proc_read_entry("scullpipe", 0, NULL, scull_read_p_mem, NULL);
+	//create_proc_read_entry("scullpipe", 0, NULL, scull_read_p_mem, NULL);
 #endif
 	return scull_p_nr_devs;
 }
@@ -387,7 +390,7 @@ void scull_p_cleanup(void)
 	int i;
 
 #ifdef SCULL_DEBUG
-	remove_proc_entry("scullpipe", NULL);
+	//remove_proc_entry("scullpipe", NULL);
 #endif
 
 	if (!scull_p_devices)

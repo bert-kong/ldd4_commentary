@@ -28,7 +28,7 @@
 #include <linux/seq_file.h>
 #include <linux/cdev.h>
 
-#include <asm/uaccess.h>	/* copy_*_user */
+#include <linux/uaccess.h>	/* copy_*_user */
 
 #include "scull.h"		/* local definitions */
 
@@ -182,8 +182,8 @@ static struct file_operations scullseq_proc_ops = {
 static void scull_create_proc(void)
 {
 	proc_create_data("scullmem", 0 /* default mode */,
-			NULL /* parent dir */, &scullmem_proc_ops,
-			NULL /* client data */);
+			 NULL /* parent dir */, &scullmem_proc_ops,
+			 NULL /* client data */);
 	proc_create_data("scullseq", 0, NULL, &scullseq_proc_ops, NULL);
 }
 
@@ -238,9 +238,14 @@ int scull_open(struct inode *inode, struct file *filp)
 
 	/* If the device was opened write-only, trim it to a length of 0. */
 	if ( (filp->f_flags & O_ACCMODE) == O_WRONLY) {
-		if (mutex_lock_interruptible(&dev->mutex))
+        /* bert: lock */
+		if (mutex_lock_interruptible(&dev->mutex)) {
 			return -ERESTARTSYS;
+        }
+
 		scull_trim(dev); /* Ignore errors. */
+
+        /* bert: unlock */
 		mutex_unlock(&dev->mutex);
 	}
 	return 0;
@@ -283,9 +288,11 @@ struct scull_qset *scull_follow(struct scull_dev *dev, int n)
  * Data management: read and write.
  */
 
-ssize_t scull_read(struct file *filp, char __user *buf, size_t count,
-                loff_t *f_pos)
-{
+ssize_t scull_read(struct file *filp,  /* file structure */ 
+                   char __user *buf,   /* user buffer */
+                   size_t count,       /* read bytes */
+                   loff_t *f_pos) {    /* current read position */
+
 	struct scull_dev *dev = filp->private_data; 
 	struct scull_qset *dptr; /* the first listitem */
 	int quantum = dev->quantum, qset = dev->qset;
@@ -293,10 +300,13 @@ ssize_t scull_read(struct file *filp, char __user *buf, size_t count,
 	int item, s_pos, q_pos, rest;
 	ssize_t retval = 0;
 
-	if (mutex_lock_interruptible(&dev->mutex))
+	if (mutex_lock_interruptible(&dev->mutex)) {
 		return -ERESTARTSYS;
+        }
+
 	if (*f_pos >= dev->size)
 		goto out;
+
 	if (*f_pos + count > dev->size)
 		count = dev->size - *f_pos;
 
@@ -596,11 +606,17 @@ void scull_cleanup_module(void)
 static void scull_setup_cdev(struct scull_dev *dev, int index)
 {
 	int err, devno = MKDEV(scull_major, scull_minor + index);
-    
+
+	/**
+	 * initialize 
+	 *    device struct cdev
+	 *    device operation
+	 */
 	cdev_init(&dev->cdev, &scull_fops);
 	dev->cdev.owner = THIS_MODULE;
-	dev->cdev.ops = &scull_fops;
+	dev->cdev.ops   = &scull_fops;
 	err = cdev_add (&dev->cdev, devno, 1);
+
 	/* Fail gracefully if need be. */
 	if (err)
 		printk(KERN_NOTICE "Error %d adding scull%d", err, index);
@@ -617,13 +633,21 @@ int scull_init_module(void)
 	 * unless directed otherwise at load time.
 	 */
 	if (scull_major) {
+		/* create device id */
 		dev = MKDEV(scull_major, scull_minor);
+
+		/* register number of devices under a major number */
+
+                /**
+                 * bert : register_chrdev_region(from, count, name)
+                 */
 		result = register_chrdev_region(dev, scull_nr_devs, "scull");
-	} else {
-		result = alloc_chrdev_region(&dev, scull_minor, scull_nr_devs,
-				"scull");
+	} 
+	else {
+		result = alloc_chrdev_region(&dev, scull_minor, scull_nr_devs, "scull");
 		scull_major = MAJOR(dev);
 	}
+
 	if (result < 0) {
 		printk(KERN_WARNING "scull: can't get major %d\n", scull_major);
 		return result;
@@ -638,12 +662,13 @@ int scull_init_module(void)
 		result = -ENOMEM;
 		goto fail;
 	}
+
 	memset(scull_devices, 0, scull_nr_devs * sizeof(struct scull_dev));
 
-        /* Initialize each device. */
+        /* Initialize each device structure */
 	for (i = 0; i < scull_nr_devs; i++) {
 		scull_devices[i].quantum = scull_quantum;
-		scull_devices[i].qset = scull_qset;
+		scull_devices[i].qset    = scull_qset;
 		mutex_init(&scull_devices[i].mutex);
 		scull_setup_cdev(&scull_devices[i], i);
 	}

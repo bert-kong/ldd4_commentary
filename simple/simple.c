@@ -28,6 +28,8 @@
 #include <linux/kdev_t.h>
 #include <asm/page.h>
 #include <linux/cdev.h>
+#include <linux/fcntl.h>
+#include <linux/uaccess.h>
 
 #include <linux/device.h>
 
@@ -41,6 +43,7 @@ MODULE_LICENSE("Dual BSD/GPL");
  */
 int simple_open (struct inode *inode, struct file *filp)
 {
+	printk("debug ---> %s\n", __func__);
 	return 0;
 }
 
@@ -50,9 +53,34 @@ int simple_open (struct inode *inode, struct file *filp)
  */
 int simple_release(struct inode *inode, struct file *filp)
 {
+	printk("debug ---> %s\n", __func__);
 	return 0;
 }
 
+static char memory[1024];
+
+static ssize_t simple_read(struct file *filp, 
+		       char __user *buf, 
+		       size_t count, 
+		       loff_t *offpos) {
+
+    copy_to_user(buf, memory, count);
+
+    return count;
+
+}
+
+static ssize_t simple_write(struct file *filp, 
+		        const char __user *buf, 
+			size_t count, 
+			loff_t *offpos) {
+
+    copy_from_user(memory, buf, count);
+
+    printk(KERN_DEBUG "debug ---> offset %lld\n", *offpos);
+
+    return count;
+}
 
 
 /*
@@ -98,11 +126,12 @@ static int simple_remap_mmap(struct file *filp, struct vm_area_struct *vma)
 /*
  * The nopage version.
  */
+#if 0
 static int simple_vma_nopage(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	struct page *pageptr;
 	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
-	unsigned long physaddr = (unsigned long)vmf->virtual_address - vma->vm_start + offset;
+	unsigned long physaddr = (unsigned long)vmf->address - vma->vm_start + offset;
 	unsigned long pageframe = physaddr >> PAGE_SHIFT;
 
 // Eventually remove these printks
@@ -120,11 +149,13 @@ static int simple_vma_nopage(struct vm_area_struct *vma, struct vm_fault *vmf)
 
 	return 0;
 }
+#endif
 
 static struct vm_operations_struct simple_nopage_vm_ops = {
 	.open =   simple_vma_open,
 	.close =  simple_vma_close,
-	.fault = simple_vma_nopage,
+	//.fault = simple_vma_nopage,
+	.fault = NULL,
 };
 
 static int simple_nopage_mmap(struct file *filp, struct vm_area_struct *vma)
@@ -143,8 +174,9 @@ static int simple_nopage_mmap(struct file *filp, struct vm_area_struct *vma)
 /*
  * Set up the cdev structure for a device.
  */
-static void simple_setup_cdev(struct cdev *dev, int minor,
-		struct file_operations *fops)
+static void simple_setup_cdev(struct cdev *dev, 
+		              int minor,
+		              struct file_operations *fops)
 {
 	int err, devno = MKDEV(simple_major, minor);
     
@@ -167,6 +199,8 @@ static struct file_operations simple_remap_ops = {
 	.open    = simple_open,
 	.release = simple_release,
 	.mmap    = simple_remap_mmap,
+	.read    = simple_read,
+	.write   = simple_write,
 };
 
 /* Device 1 uses nopage */
@@ -206,7 +240,9 @@ static int simple_init(void)
 	else {
 		result = alloc_chrdev_region(&dev, 0, 2, "simple");
 		simple_major = MAJOR(dev);
+		printk(KERN_DEBUG "debug ---> (0x%08x:0x%x)\n", dev, simple_major);
 	}
+
 	if (result < 0) {
 		printk(KERN_WARNING "simple: unable to get major %d\n", simple_major);
 		return result;
@@ -215,7 +251,7 @@ static int simple_init(void)
 		simple_major = result;
 
 	/* Now set up two cdevs. */
-	simple_setup_cdev(SimpleDevs, 0, &simple_remap_ops);
+	simple_setup_cdev(SimpleDevs + 0, 0, &simple_remap_ops);
 	simple_setup_cdev(SimpleDevs + 1, 1, &simple_nopage_ops);
 	return 0;
 }

@@ -1,9 +1,9 @@
 # Comment/uncomment the following line to disable/enable debugging
-#DEBUG = y
+DEBUG = y
 
 # Add your debugging flag (or not) to ccflags.
 ifeq ($(DEBUG),y)
-  DEBFLAGS = -O -g # "-O" is needed to expand inlines
+  DEBFLAGS = -O0 -g -save-temps=obj # "-O" is needed to expand inlines
 else
   DEBFLAGS = -O2
 endif
@@ -22,6 +22,7 @@ KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 PWD       := $(shell pwd)
 
 default:
+	echo $(KERNELDIR)
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) LDDINCDIR=$(PWD)/../include modules
 
 endif
@@ -29,7 +30,7 @@ endif
 
 
 clean:
-	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
+	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions *.i *.s
 
 depend .depend dep:
 	$(CC) -M *.c > .depend
