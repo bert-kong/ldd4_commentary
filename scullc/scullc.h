@@ -38,7 +38,7 @@
 
 #define SCULLC_MAJOR 0   /* dynamic major by default */
 
-#define SCULLC_DEVS 4    /* scullc0 through scullc3 */
+#define SCULLC_DEVS 1    /* scullc0 through scullc3 */
 
 /*
  * The bare device is a variable-length region of memory.
@@ -50,10 +50,12 @@
  * The array (quantum-set) is SCULLC_QSET long.
  */
 #define SCULLC_QUANTUM  4000 /* use a quantum size like scull */
-#define SCULLC_QSET     500
+#define SCULLC_QSET     4
 
 struct scullc_dev {
-	void **data;
+	int *data;
+    int rd;
+    int wr;
 	struct scullc_dev *next;  /* next listitem */
 	int vmas;                 /* active mappings */
 	int quantum;              /* the current allocation size */

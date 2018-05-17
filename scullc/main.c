@@ -31,6 +31,9 @@
 #include "scullc.h"		/* local definitions */
 
 
+#define ture 1
+#define false 0
+
 int scullc_major =   SCULLC_MAJOR;
 int scullc_devs =    SCULLC_DEVS;	/* number of bare scullc devices */
 int scullc_qset =    SCULLC_QSET;
@@ -48,17 +51,25 @@ struct scullc_dev *scullc_devices; /* allocated in scullc_init */
 int scullc_trim(struct scullc_dev *dev);
 void scullc_cleanup(void);
 
+static int isFull(const struct scullc_dev *dev) {
+    return dev->rd==((dev->wr+1) % dev->qset);
+}
+
+static inline int isEmpty(const struct scullc_dev *dev) {
+    return (dev->rd==dev->wr);
+}
+
 /* declare one cache pointer: use it for all devices */
 struct kmem_cache *scullc_cache;
 
-
-
-
+DECLARE_WAIT_QUEUE_HEAD(write_wait_queue);
+DECLARE_WAIT_QUEUE_HEAD(read_wait_queue);
 
 #ifdef SCULLC_USE_PROC /* don't waste space if unused */
 /*
  * The proc filesystem: function to read and entry
  */
+
 
 void scullc_proc_offset(char *buf, char **start, off_t *offset, int *len)
 {
@@ -121,19 +132,24 @@ int scullc_read_procmem(char *buf, char **start, off_t offset,
  * Open and close
  */
 
+
 int scullc_open (struct inode *inode, struct file *filp)
 {
 	struct scullc_dev *dev; /* device information */
 
 	/*  Find the device */
 	dev = container_of(inode->i_cdev, struct scullc_dev, cdev);
+
 	printk(KERN_DEBUG "debug ---> %s:%p\n", __func__, dev);
 
-    	/* now trim to 0 the length of the device if open was write-only */
+   	/* now trim to 0 the length of the device if open was write-only */
 	if ( (filp->f_flags & O_ACCMODE) == O_WRONLY) {
-		if (down_interruptible (&dev->sem))
+        /* lock */
+		if (down_interruptible (&dev->sem)) {
 			return -ERESTARTSYS;
-		scullc_trim(dev); /* ignore errors */
+		}
+		//scullc_trim(dev); /* ignore errors */
+        /* unlock */
 		up (&dev->sem);
 	}
 
@@ -168,45 +184,41 @@ struct scullc_dev *scullc_follow(struct scullc_dev *dev, int n)
  * Data management: read and write
  */
 
-ssize_t scullc_read (struct file *filp, char __user *buf, size_t count,
-                loff_t *f_pos)
-{
+ssize_t scullc_read (struct file *filp, 
+                     char __user *buf, 
+                     size_t count,
+                     loff_t *f_pos) {
+
 	struct scullc_dev *dev = filp->private_data; /* the first listitem */
-	struct scullc_dev *dptr;
-	int quantum = dev->quantum;
-	int qset = dev->qset;
-	int itemsize = quantum * qset; /* how many bytes in the listitem */
-	int item, s_pos, q_pos, rest;
 	ssize_t retval = 0;
 
-	if (down_interruptible (&dev->sem))
+    /* lock */
+	if (down_interruptible (&dev->sem)) {
 		return -ERESTARTSYS;
-	if (*f_pos > dev->size) 
-		goto nothing;
-	if (*f_pos + count > dev->size)
-		count = dev->size - *f_pos;
-	/* find listitem, qset index, and offset in the quantum */
-	item = ((long) *f_pos) / itemsize;
-	rest = ((long) *f_pos) % itemsize;
-	s_pos = rest / quantum; q_pos = rest % quantum;
+    }
 
-    	/* follow the list up to the right position (defined elsewhere) */
-	dptr = scullc_follow(dev, item);
+    while (isEmpty(dev)) {
+        /* unlock */
+        up(&dev->sem);
 
-	if (!dptr->data)
-		goto nothing; /* don't fill holes */
-	if (!dptr->data[s_pos])
-		goto nothing;
-	if (count > quantum - q_pos)
-		count = quantum - q_pos; /* read only up to the end of this quantum */
+        /**
+         * init the wait queue, in the isEmpty() loop call scheduler */
+        wait_event_interruptible(read_wait_queue, !isEmpty(dev));
 
-	if (copy_to_user (buf, dptr->data[s_pos]+q_pos, count)) {
+        /* lock */
+        down_interruptible(&dev->sem);
+    }
+
+	if (copy_to_user (buf, &dev->data[dev->rd], count)) {
 		retval = -EFAULT;
 		goto nothing;
 	}
+
+    dev->rd = (dev->rd + 1) % dev->qset;
+
+    /* unlock */
 	up (&dev->sem);
 
-	*f_pos += count;
 	return count;
 
   nothing:
@@ -215,52 +227,37 @@ ssize_t scullc_read (struct file *filp, char __user *buf, size_t count,
 }
 
 
-
-ssize_t scullc_write (struct file *filp, const char __user *buf, size_t count,
-                loff_t *f_pos)
+ssize_t scullc_write (struct file *filp, 
+                      const char __user *buf, 
+                      size_t count,
+                      loff_t *f_pos)
 {
 	struct scullc_dev *dev = filp->private_data;
-	struct scullc_dev *dptr;
-	int quantum = dev->quantum;
-	int qset = dev->qset;
-	int itemsize = quantum * qset;
-	int item, s_pos, q_pos, rest;
 	ssize_t retval = -ENOMEM; /* our most likely error */
 
-	if (down_interruptible (&dev->sem))
+    /* lock */
+	if (down_interruptible (&dev->sem)) {
 		return -ERESTARTSYS;
+    }
 
-	/* find listitem, qset index and offset in the quantum */
-	item = ((long) *f_pos) / itemsize;
-	rest = ((long) *f_pos) % itemsize;
-	s_pos = rest / quantum; q_pos = rest % quantum;
+    while (isFull(dev)) {
+        up(&dev->sem);
+        wait_event_interruptible(write_wait_queue, !isFull(dev));
+        if (down_interruptible(&dev->sem)) {
+            return -ERESTARTSYS;
+        }
+    }
 
-	/* follow the list up to the right position */
-	dptr = scullc_follow(dev, item);
-	if (!dptr->data) {
-		dptr->data = kmalloc(qset * sizeof(void *), GFP_KERNEL);
-		if (!dptr->data)
-			goto nomem;
-		memset(dptr->data, 0, qset * sizeof(char *));
-	}
-	/* Allocate a quantum using the memory cache */
-	if (!dptr->data[s_pos]) {
-		dptr->data[s_pos] = kmem_cache_alloc(scullc_cache, GFP_KERNEL);
-		if (!dptr->data[s_pos])
-			goto nomem;
-		memset(dptr->data[s_pos], 0, scullc_quantum);
-	}
-	if (count > quantum - q_pos)
-		count = quantum - q_pos; /* write only up to the end of this quantum */
-	if (copy_from_user (dptr->data[s_pos]+q_pos, buf, count)) {
+    /* if buffer full, wait in the write queue */
+
+	if (copy_from_user (&dev->data[dev->wr], buf, count)) {
 		retval = -EFAULT;
 		goto nomem;
 	}
-	*f_pos += count;
+	//*f_pos += count;
+    dev->wr = (dev->wr + 1) % dev->qset;
  
-    	/* update the size */
-	if (dev->size < *f_pos)
-		dev->size = *f_pos;
+    /* unlock */
 	up (&dev->sem);
 	return count;
 
@@ -496,6 +493,7 @@ int scullc_trim(struct scullc_dev *dev)
 	if (dev->vmas) /* don't trim: there are active mappings */
 		return -EBUSY;
 
+
 	for (dptr = dev; dptr; dptr = next) { /* all the list items */
 		if (dptr->data) {
 			for (i = 0; i < qset; i++)
@@ -521,8 +519,10 @@ static void scullc_setup_cdev(struct scullc_dev *dev, int index)
 	int err, devno = MKDEV(scullc_major, index);
     
 	cdev_init(&dev->cdev, &scullc_fops);
+
 	dev->cdev.owner = THIS_MODULE;
-	dev->cdev.ops = &scullc_fops;
+	dev->cdev.ops   = &scullc_fops;
+
 	err = cdev_add (&dev->cdev, devno, 1);
 	/* Fail gracefully if need be */
 	if (err)
@@ -568,21 +568,29 @@ int scullc_init(void)
 
 	/* inititialize the scullc data structure */
 	for (i = 0; i < scullc_devs; i++) {
-		scullc_devices[i].quantum = scullc_quantum;
-		scullc_devices[i].qset = scullc_qset;
+		scullc_devices[i].quantum = scullc_quantum; /* 4000 */
+		scullc_devices[i].qset    = scullc_qset;    /* 500 */
+		scullc_devices[i].rd      = 0;
+		scullc_devices[i].wr      = 0;
+        scullc_devices[i].data    = (int *) kmalloc(scullc_qset * sizeof(int), GFP_KERNEL);
+
+        /* init semaphone */
 		sema_init (&scullc_devices[i].sem, 1);
+        /* init cdev : char device */
 		scullc_setup_cdev(scullc_devices + i, i);
 	}
 
+#if 0
 	scullc_cache = kmem_cache_create("scullc", 
 		                    	 scullc_quantum,
-			                 0, 
-					 SLAB_HWCACHE_ALIGN, 
-					 NULL); /* no ctor */
+			                    0, 
+					            SLAB_HWCACHE_ALIGN, 
+					            NULL); /* no ctor */
 	if (!scullc_cache) {
 		scullc_cleanup();
 		return -ENOMEM;
 	}
+#endif
 
 #ifdef SCULLC_USE_PROC /* only when available */
 	create_proc_read_entry("scullcmem", 0, NULL, scullc_read_procmem, NULL);
@@ -606,12 +614,14 @@ void scullc_cleanup(void)
 
 	for (i = 0; i < scullc_devs; i++) {
 		cdev_del(&scullc_devices[i].cdev);
-		scullc_trim(scullc_devices + i);
+		//scullc_trim(scullc_devices + i);
 	}
 	kfree(scullc_devices);
 
+#if 0
 	if (scullc_cache)
 		kmem_cache_destroy(scullc_cache);
+#endif
 	unregister_chrdev_region(MKDEV (scullc_major, 0), scullc_devs);
 }
 

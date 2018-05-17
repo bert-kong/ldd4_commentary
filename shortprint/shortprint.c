@@ -19,6 +19,7 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 
+#include <linux/sched/signal.h>
 #include <linux/sched.h>
 #include <linux/kernel.h> /* printk() */
 #include <linux/fs.h>	  /* everything... */
@@ -186,9 +187,13 @@ static ssize_t shortp_read(struct file *filp, char __user *buf, size_t count, lo
 	DEFINE_WAIT(wait);
 
 	while (shortp_in_head == shortp_in_tail) {
+        /* empty: wait in the queue */
 		prepare_to_wait(&shortp_in_queue, &wait, TASK_INTERRUPTIBLE);
 		if (shortp_in_head == shortp_in_tail)
+            /* relinquish itself */
 			schedule();
+
+        /* the thread starts running and check any pending signal */
 		finish_wait(&shortp_in_queue, &wait);
 		if (signal_pending (current))  /* a signal arrived */
 			return -ERESTARTSYS; /* tell the fs layer to handle it */
@@ -201,9 +206,13 @@ static ssize_t shortp_read(struct file *filp, char __user *buf, size_t count, lo
 	if (count0 < count)
 		count = count0;
 
+    /* copy the contents to user */
 	if (copy_to_user(buf, (char *)shortp_in_tail, count))
 		return -EFAULT;
+
+    /* update position */
 	shortp_incr_bp(&shortp_in_tail, count);
+
 	return count;
 }
 
@@ -287,24 +296,29 @@ static ssize_t shortp_write(struct file *filp, const char __user *buf, size_t co
 		/* Hang out until some buffer space is available. */
 		space = shortp_out_space();
 		if (space <= 0) {
-			if (wait_event_interruptible(shortp_out_queue,
-					    (space = shortp_out_space()) > 0))
+            /* full : wait in the queue */
+			if (wait_event_interruptible(shortp_out_queue, (space = shortp_out_space()) > 0))
 				goto out;
 		}
 
 		/* Move data into the buffer. */
 		if ((space + written) > count)
 			space = count - written;
+
+        /* copy contents from the user */
 		if (copy_from_user((char *) shortp_out_head, buf, space)) {
 			mutex_unlock(&shortp_out_mutex);
 			return -EFAULT;
 		}
+
+        /* update the position */
 		shortp_incr_out_bp(&shortp_out_head, space);
 		buf += space;
 		written += space;
 
 		/* If no output is active, make it active. */
 		spin_lock_irqsave(&shortp_out_lock, flags);
+
 		if (! shortp_output_active)
 			shortp_start_output();
 		spin_unlock_irqrestore(&shortp_out_lock, flags);
@@ -320,8 +334,6 @@ out:
 /*
  * The bottom-half handler.
  */
-
-
 static void shortp_do_work(struct work_struct *work)
 {
 	int written;

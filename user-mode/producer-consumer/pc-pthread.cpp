@@ -175,9 +175,27 @@ const char *reverse_string(const char *st) {
 	return buf;
 }
 
-void test_reverse_string( ) {
-	::printf("%s\n", reverse_string("0123456789"));
+void reverse_string_recu(char *s, const int start, const int end) {
+
+	if ( start==end || start > end) {
+		return;
+	}
+
+	char ch = s[start];
+	s[start] = s[end];
+	s[end] = ch;
+	reverse_string_recu(s, start+1, end-1);
 }
+
+void test_reverse_string( ) {
+	//::printf("%s\n", reverse_string("0123456789"));
+	char st[] = "0123456789";
+
+	reverse_string_recu(st, 0, ::strlen(st)-1);
+	::printf("debug ---> %s\n", st);
+}
+
+
 
 int main(int argc, char *argv[]) {
     //ProducerConsumer::run();

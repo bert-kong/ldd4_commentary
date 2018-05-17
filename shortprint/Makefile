@@ -1,7 +1,7 @@
 # Comment/uncomment the following line to disable/enable debugging
 #DEBUG = y
 
-ccflags-y += -O2 -I..
+ccflags-y += -O2 -I.. -save-temps=obj
 
 ifneq ($(KERNELRELEASE),)
 # call from kernel build system
